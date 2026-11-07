@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-import torch
+import torch  
 
 from morphing_rovers.chromosome import always_switch, assemble, split, wired_network
 from morphing_rovers.config import ImitationConfig, ScheduleConfig
