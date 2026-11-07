@@ -1,0 +1,44 @@
+[project]
+name = "morphing-rovers"
+version = "0.2.0"
+description = "Solution to ESA's SpOC 2 Morphing Rovers optimisation challenge (GECCO 2023)"
+readme = "README.md"
+authors = [{ name = "Thomas Uriot" }]
+requires-python = ">=3.10"
+dependencies = [
+    "imageio>=2.31",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.4",
+    "torch>=2.2",
+    "torchvision>=0.17",
+]
+
+[project.scripts]
+morphing-rovers = "morphing_rovers.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: full 30-scenario evaluations (~15 s each), deselect with -m 'not slow'"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["B", "I", "NPY", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Official challenge code, kept as close as possible to the original.
+"src/morphing_rovers/udp.py" = ["ALL"]
