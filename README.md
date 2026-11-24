@@ -1,91 +1,97 @@
-# Rinesa Sekiraca — Morphing Rovers
+# ESA morphing rovers optimisation challenge
 
-Projekt studentor për sfidën **SpOC 2: Morphing Rovers** të ESA-s. Qëllimi është të optimizohet një rover që ndryshon formën sipas terrenit dhe arrin mostrat në 30 skenarë të ndryshëm.
+This code is a solution to the Optimisation challenge SPOC2 of the European Space Agency (https://optimise.esa.int/challenge/spoc-2-morphing-rovers/About).
 
-Programi përdor hartat e terrenit, optimizon katër maskat e roverit, kërkon rrugë të drejta dhe të lakuara për secilin skenar dhe trajnon kontrolluesin për drejtimin dhe ndërrimin e formës. Rezultati vlerësohet me fitness-in mesatar në 30 skenarët; **vlera më e ulët është më e mirë**. Vlera 1.0 është kufiri ideal teorik dhe nuk garantohet nga trajnimi.
+Part of the solution that finished 2nd overall (team ML Actonauts).
 
-## Kërkesat
+The pipeline of this repository now reaches a fitness of **1.6783** over the 30 scenarios, against 2.0211 for the
+submitted solution (lower is better).
 
-- Python 3.10 ose më i ri
-- [uv](https://docs.astral.sh/uv/)
-- Varësitë Python përcaktohen te `pyproject.toml` dhe fiksohen te `uv.lock`
+## Set-up
 
-## Instalimi
-
-Nga dosja kryesore e projektit:
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) (Python 3.10 or above):
 
 ```bash
 uv sync
 ```
 
-## Ekzekutimi
+## Usage
 
-Për optimizimin e plotë:
+The whole optimisation runs with a single command, configured by one file holding the parameters of every step
+([`configs/default.yml`](configs/default.yml)):
 
 ```bash
 uv run morphing-rovers run -c configs/default.yml
+# any value can be overridden from the command line
+uv run morphing-rovers run -c configs/default.yml -s output_dir=runs/test -s imitation.n_runs=1
 ```
 
-Konfigurimi parazgjedhur bën 100 përsëritje trajnimi, secila me horizonte nga 1 deri në 500 hapa. Ky ekzekutim mund të zgjasë shumë. Parametrat mund të ndryshohen nga komanda, pa redaktuar konfigurimin. Për një provë më të shkurtër:
+1. **Masks** of the 4 rover modes. The terrain patches a rover drives over when heading straight for its sample
+   are encoded by a convolutional autoencoder (a pretrained one is in `artifacts/autoencoder.pt`) and clustered.
+   One mask is fitted per cluster by gradient ascent on the velocity function, then the masks are refined by
+   reassigning each patch to its fastest mask and refitting them. Set `masks.from_chromosome` to reuse the masks
+   of an existing chromosome instead. They are then refined on the routes of the rover, by alternating the fastest
+   switching schedule and the time spent in each mode (the mean of 1 / velocity, each scenario counting the same).
+2. **Heading offsets**. Heading straight for the sample is not the fastest way there: a rover keeping a constant
+   angle from the sample spirals into it, over a different terrain. The best angle of each scenario is searched
+   on the fastest switching schedule of each candidate, by alternating with the refinement of the masks (`offsets`
+   section). Candidates leaving the map are scored like the simulator scores them, which rules them out.
+3. **Steering**. Heading for the sample is a linear function of an input of the network, so by default it is wired
+   into the network, on a hidden channel kept apart from training (`steering: wired`). The offsets are wired too:
+   the first view tells the scenario apart, and a code solved in closed form from it is latched in the recurrent
+   channel. With `steering: learned`, the network imitates the experts instead: the rover drives with its current
+   network while an expert gives the steering it should have taken, heading for the sample or following an arc for
+   the scenarios listed in `imitation.radius_factors`, on an increasing number of simulation steps per scenario.
+   Arcs need learned steering, as following them is not a function a wired network can compute.
+4. **Switching**. A rover can only morph into the best mode for the terrain under it, and doing so locks that mode
+   for 9 steps, which may not be worth it depending on the terrain ahead. Dynamic programming over each route gives
+   the fastest schedule, and the switch output of the network imitates it, DAgger-style: it is fitted to the
+   decisions met in its own rollouts, each weighted by the steps at stake.
+
+The run writes `config.yml`, `heading_offsets.json`, `masks.npy`, `switching.csv` (and `history.csv` with
+`steering: learned`), `best_chromosome.npy` and `submission.json` to `output_dir`.
+
+With [just](https://just.systems), `just solve` runs the same optimisation and copies the result to `solution.json`
+at the root of the repository (extra arguments go to the command line, e.g. `just solve -s imitation.n_runs=1`).
+`just export` writes `solution.json` from the best chromosome saved so far, which also works on an interrupted run.
+
+Other commands:
 
 ```bash
-uv run morphing-rovers run -c configs/default.yml \
-  -s output_dir=runs/trial \
-  -s schedule.rounds=0 \
-  -s masks.dataset.samples_per_scenario=20 \
-  -s masks.optimization.n_iter=10 \
-  -s imitation.n_runs=1 \
-  -s imitation.horizon_stop=10 \
-  -s imitation.n_iter=10
+uv run morphing-rovers evaluate artifacts/chromosomes/chromosome_2.0211.npy [--scenarios 0 5] [--plot]
+uv run morphing-rovers submit runs/default/best_chromosome.npy -o submission.json --name my-submission
+# fitness of single scenarios on each arc of the config's `sweep` section, driven by the fastest switching
+# schedule, to choose `imitation.radius_factors`
+uv run morphing-rovers sweep -c configs/default.yml -s sweep.scenarios=null
 ```
 
-Prova e shkurtër kontrollon që projekti niset; nuk është optimizim i plotë dhe mund të japë fitness më të lartë.
+`artifacts/chromosomes` holds three trained chromosomes: `chromosome_2.0211.npy` (the submitted one),
+`chromosome_2.0469.npy` and `chromosome_1.6783.npy`, the best of three seeds of the default config with 32 rounds of
+switching (1.6783, 1.6818, 1.6886), which all reach 28 of the 30 samples.
 
-## Rezultatet
+## Code layout
 
-Rezultatet ruhen te `output_dir` i konfigurimit, parazgjedhur `runs/default/`:
+| Module | Content |
+| --- | --- |
+| `udp.py` | Challenge simulation and fitness, identical to the official evaluation code |
+| `chromosome.py` | Split, assemble, save and load chromosomes, wired steering and heading offsets |
+| `masks.py`, `autoencoder.py` | Mode views along the straight paths, autoencoder, clustering, mask fitting |
+| `routes.py` | Routes driven by the rover, fast simulation along them, fastest switching schedule and offset search |
+| `experts.py`, `imitation.py` | Expert steering (straight line, arc, heading offset) and imitation learning of both network outputs |
+| `pipeline.py`, `config.py`, `cli.py` | End-to-end optimisation, its configuration and the command line |
+| `submission.py` | Submission file for the ESA optimise platform |
 
-- `submission.json` — kromozomi në format për dorëzim
-- `best_chromosome.npy` — kromozomi më i mirë i gjetur
-- `history.csv` — fitness-i dhe përparimi përgjatë trajnimit
-- `masks.npy` — maskat e optimizuara të roverit
-- `route_choices.json` — rruga dhe korrigjimi i drejtimit të zgjedhur për çdo skenar
-- `config.yml` — konfigurimi i përdorur për ekzekutimin
-
-Gjatë trajnimit, rreshtat e terminalit tregojnë `run`, `horizon`, `fitness`, rezultatin më të mirë deri atëherë dhe numrin e objektivave të arritura. Në përfundim shfaqet tabela për 30 skenarët dhe `Avg. fitness`.
-
-## Vlerësimi dhe dorëzimi
-
-Për të vlerësuar një kromozom dhe për të shfaqur trajektoret:
+## Tests
 
 ```bash
-uv run morphing-rovers evaluate runs/default/best_chromosome.npy --plot
+uv run pytest                 # ~1.5 min
+uv run pytest -m "not slow"   # skips the full 30-scenario evaluations
 ```
 
-Për të krijuar skedarin e dorëzimit nga një kromozom ekzistues:
+## Rovers' optimized masks (fitness 1.6783):
 
-```bash
-uv run morphing-rovers submit runs/default/best_chromosome.npy \
-  -o submission.json \
-  --name "Rinesa Sekiraca"
-```
+![ESA Morphing Rovers](images/rovers_masks.png)
 
-## Ekzekutimi në Kaggle
+## Trajectories for the 30 scenarios (fitness 1.6783):
 
-Ngarko projektin si Dataset dhe shtoje te Notebook-u me **Add Input**. Kopjoje në hapësirën e shkrueshme të Notebook-ut, kalo te dosja e projektit dhe nise modulin:
-
-```bash
-PYTHONPATH=src python -m morphing_rovers.cli run \
-  -c configs/default.yml \
-  -s output_dir=/kaggle/working/runs/kaggle
-```
-
-Nëse ZIP-i nxirret në një dosje të ndërmjetme, përdor dosjen që përmban `pyproject.toml` si dosjen kryesore të projektit. Rezultatet ruhen te `/kaggle/working/runs/kaggle/`.
-
-## Testet
-
-Për të ekzekutuar testet:
-
-```bash
-uv run pytest
-```
+![ESA Morphing Rovers](images/trajectories.png)
